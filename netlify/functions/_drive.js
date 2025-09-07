@@ -10,11 +10,6 @@ const {
 } = process.env;
 
 
-function getDrive() {
-  const auth = getOAuth2Client();
-  return google.drive({ version: "v3", auth });
-}
-
 
 if (!GOOGLE_OAUTH_CLIENT_ID || !GOOGLE_OAUTH_CLIENT_SECRET) {
   throw new Error("Missing Google OAuth client credentials in env.");
@@ -25,6 +20,13 @@ const oAuth2Client = new google.auth.OAuth2(
   GOOGLE_OAUTH_CLIENT_SECRET,
   OAUTH_REDIRECT
 );
+
+
+function getDrive() {
+  return google.drive({ version: "v3", oAuth2Client });
+}
+
+
 
 if (GOOGLE_REFRESH_TOKEN) {
   oAuth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
