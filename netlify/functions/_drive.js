@@ -6,7 +6,15 @@ const {
   GOOGLE_OAUTH_CLIENT_SECRET,
   GOOGLE_REFRESH_TOKEN,       // put your refresh token in Netlify env
   OAUTH_REDIRECT,             // e.g. https://<site>.netlify.app/oauth2callback
+  DRIVE_FOLDER_ID,
 } = process.env;
+
+
+function getDrive() {
+  const auth = getOAuth2Client();
+  return google.drive({ version: "v3", auth });
+}
+
 
 if (!GOOGLE_OAUTH_CLIENT_ID || !GOOGLE_OAUTH_CLIENT_SECRET) {
   throw new Error("Missing Google OAuth client credentials in env.");
@@ -24,4 +32,4 @@ if (GOOGLE_REFRESH_TOKEN) {
 
 const drive = google.drive({ version: "v3", auth: oAuth2Client });
 
-module.exports = { drive, oAuth2Client };
+module.exports = { drive, oAuth2Client ,getDrive};
