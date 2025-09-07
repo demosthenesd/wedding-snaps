@@ -14,25 +14,35 @@ const upload = multer({ storage: multer.memoryStorage() });
 const PORT = process.env.PORT || 3000;
 const DRIVE_FOLDER_ID = (process.env.DRIVE_FOLDER_ID || "").trim();
 const AUTH_TYPE = (process.env.GOOGLE_AUTH_TYPE || "oauth").toLowerCase();
-const REDIRECT = process.env.OAUTH_REDIRECT || "http://localhost:3000/oauth2callback";
+const REDIRECT =
+  process.env.OAUTH_REDIRECT || `http://localhost:${PORT}/oauth2callback`;
 
 if (!DRIVE_FOLDER_ID) {
   console.error("❌ Missing DRIVE_FOLDER_ID in .env");
   process.exit(1);
 }
 
-let drive;           // initialized by initAuth()
-let DRIVE_ID = null; // populated by ensureFolder()
+let drive;            // initialized by initAuth()
+let DRIVE_ID = null;  // populated by ensureFolder()
+let oAuth2Client;     // keep a reference to reuse
+
 const tokenPath = path.join(__dirname, "tokens.json");
+const tokensExist = () => fs.existsSync(tokenPath);
+const isAuthed = () => {
+  try {
+    if (!tokensExist()) return false;
+    const t = JSON.parse(fs.readFileSync(tokenPath, "utf8"));
+    // minimal sanity: must have refresh_token or (temporary) access_token
+    return !!(t.refresh_token || t.access_token);
+  } catch {
+    return false;
+  }
+};
 
-function tokensExist() {
-  return fs.existsSync(tokenPath);
-}
-
-// -------------------- Auth init (OAuth, recommended) --------------------
+// ---------- OAuth init ----------
 async function initAuth() {
   if (AUTH_TYPE !== "oauth") {
-    console.error("❌ This file is set up for OAuth. Set GOOGLE_AUTH_TYPE=oauth in .env.");
+    console.error("❌ Set GOOGLE_AUTH_TYPE=oauth in .env.");
     process.exit(1);
   }
 
@@ -43,13 +53,13 @@ async function initAuth() {
     process.exit(1);
   }
 
-  const oAuth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT);
+  oAuth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT);
 
   if (tokensExist()) {
     oAuth2Client.setCredentials(JSON.parse(fs.readFileSync(tokenPath, "utf8")));
     console.log("🔐 Using existing OAuth tokens.");
   } else {
-    console.log(`🔓 No tokens yet. Visit http://localhost:${PORT}/auth to connect your Google account.`);
+    console.log(`🔓 No tokens yet. Visiting the site will redirect to /auth.`);
   }
 
   // Persist refreshed tokens automatically
@@ -64,7 +74,7 @@ async function initAuth() {
 
   // OAuth routes
   app.get("/auth", (req, res) => {
-    // Use narrower scope to avoid verification: your app can access files it creates
+    // Narrow scope avoids verification for broader Drive access
     const scopes = ["https://www.googleapis.com/auth/drive.file"];
     const url = oAuth2Client.generateAuthUrl({
       access_type: "offline",
@@ -82,17 +92,25 @@ async function initAuth() {
       fs.writeFileSync(tokenPath, JSON.stringify(tokens, null, 2));
       console.log("✅ OAuth tokens saved to tokens.json");
 
-      // Now that we have tokens, verify folder and then go home
+      // Verify folder, then send to home
       await ensureFolder();
-      res.send("✅ Google Drive connected. You can close this tab and go back to the app.");
+      res.redirect("/");
     } catch (e) {
       console.error("OAuth callback error:", e.message || e);
       res.status(500).send("OAuth error");
     }
   });
+
+  // Optional logout to clear local tokens
+  app.post("/logout", (req, res) => {
+    try {
+      if (tokensExist()) fs.unlinkSync(tokenPath);
+    } catch {}
+    res.json({ ok: true });
+  });
 }
 
-// -------------------- Verify folder --------------------
+// ---------- Verify folder ----------
 async function ensureFolder() {
   const { data } = await drive.files.get({
     fileId: DRIVE_FOLDER_ID,
@@ -103,14 +121,33 @@ async function ensureFolder() {
     throw new Error(`The ID is not a folder (mimeType=${data.mimeType}).`);
   }
   DRIVE_ID = data.driveId || null;
-  console.log(`✅ Folder ok: "${data.name}" (${data.id})` + (DRIVE_ID ? ` on Shared Drive ${DRIVE_ID}` : " on My Drive"));
+  console.log(
+    `✅ Folder ok: "${data.name}" (${data.id})` +
+      (DRIVE_ID ? ` on Shared Drive ${DRIVE_ID}` : " on My Drive")
+  );
 }
 
-// -------------------- Static client --------------------
+// ---------- Auth gate helpers ----------
+function requireAuth({ htmlRedirect = false } = {}) {
+  return (req, res, next) => {
+    if (isAuthed()) return next();
+    if (htmlRedirect) return res.redirect("/auth");
+    return res.status(401).json({ ok: false, error: "Not authenticated", auth: "/auth" });
+  };
+}
+
+// ---------- Landing page: trigger auth if not signed in ----------
+// Intercept "/" and "/index.html" BEFORE static middleware
+app.get(["/", "/index.html"], (req, res, next) => {
+  if (!isAuthed()) return res.redirect("/auth");
+  return res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+// ---------- Static assets ----------
 app.use(express.static(path.join(__dirname, "public")));
 
-// -------------------- Upload to Drive --------------------
-app.post("/upload-drive", upload.single("photo"), async (req, res) => {
+// ---------- APIs (gated) ----------
+app.post("/upload-drive", requireAuth(), upload.single("photo"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ ok: false, error: "No file" });
 
@@ -137,8 +174,7 @@ app.post("/upload-drive", upload.single("photo"), async (req, res) => {
   }
 });
 
-// -------------------- Gallery (list latest images) --------------------
-app.get("/gallery", async (req, res) => {
+app.get("/gallery", requireAuth(), async (req, res) => {
   try {
     const listParams = {
       q: `'${DRIVE_FOLDER_ID}' in parents and mimeType contains 'image/' and trashed = false`,
@@ -160,8 +196,7 @@ app.get("/gallery", async (req, res) => {
   }
 });
 
-// -------------------- Image proxy (keeps files private) --------------------
-app.get("/image/:id", async (req, res) => {
+app.get("/image/:id", requireAuth(), async (req, res) => {
   try {
     const fileId = req.params.id;
     const meta = await drive.files.get({
@@ -186,16 +221,23 @@ app.get("/image/:id", async (req, res) => {
   }
 });
 
-// -------------------- Start server --------------------
+// ---------- Boot ----------
 (async () => {
   await initAuth();
 
   // Only check folder at startup if we already have tokens
-  if (tokensExist()) {
-    await ensureFolder();
+  if (isAuthed()) {
+    try {
+      await ensureFolder();
+    } catch (e) {
+      console.warn("⚠️ Folder check failed; will retry after auth:", e.message || e);
+    }
   }
 
   app.listen(PORT, () => {
     console.log(`🚀 http://localhost:${PORT}`);
+    if (!isAuthed()) {
+      console.log(`🔑 Not authenticated. Open http://localhost:${PORT} to begin OAuth.`);
+    }
   });
 })();
