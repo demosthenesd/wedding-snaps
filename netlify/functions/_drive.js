@@ -53,4 +53,5 @@ module.exports = {
   getDrive,
   ensureFolderOnAllDrives,
   DRIVE_FOLDER_ID,
+  getOAuth2Client
 };
