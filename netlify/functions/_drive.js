@@ -1,37 +1,32 @@
 // netlify/functions/_drive.js
 const { google } = require("googleapis");
+const fs = require("fs");
+const path = require("path");
 
-const {
-  GOOGLE_OAUTH_CLIENT_ID,
-  GOOGLE_OAUTH_CLIENT_SECRET,
-  GOOGLE_REFRESH_TOKEN,       // put your refresh token in Netlify env
-  OAUTH_REDIRECT,             // e.g. https://<site>.netlify.app/oauth2callback
-  DRIVE_FOLDER_ID,
-} = process.env;
+const CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID;
+const CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+const REDIRECT = process.env.OAUTH_REDIRECT || "http://localhost:8888/.netlify/functions/oauth2callback";
 
+const oAuth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT);
 
+// ---- Look for refresh token ----
+let refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
 
-if (!GOOGLE_OAUTH_CLIENT_ID || !GOOGLE_OAUTH_CLIENT_SECRET) {
-  throw new Error("Missing Google OAuth client credentials in env.");
+// fallback: load from tokens.json (only exists locally, never pushed to GitHub!)
+if (!refreshToken) {
+  try {
+    const tokenPath = path.join(__dirname, "../../tokens.json");
+    const tokens = JSON.parse(fs.readFileSync(tokenPath, "utf8"));
+    refreshToken = tokens.refresh_token;
+    console.log("✅ Loaded refresh token from tokens.json");
+  } catch {
+    console.warn("⚠️ No GOOGLE_REFRESH_TOKEN found in env or tokens.json");
+  }
 }
 
-const oAuth2Client = new google.auth.OAuth2(
-  GOOGLE_OAUTH_CLIENT_ID,
-  GOOGLE_OAUTH_CLIENT_SECRET,
-  OAUTH_REDIRECT
-);
-
-
-function getDrive() {
-  return google.drive({ version: "v3", oAuth2Client });
-}
-
-
-
-if (GOOGLE_REFRESH_TOKEN) {
-  oAuth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
+if (refreshToken) {
+  oAuth2Client.setCredentials({ refresh_token: refreshToken });
 }
 
 const drive = google.drive({ version: "v3", auth: oAuth2Client });
-
-module.exports = { drive, oAuth2Client ,getDrive};
+module.exports = drive;
