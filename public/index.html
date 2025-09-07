@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Camera Capture → Upload to Google Drive (≤100KB)</title>
+    <style>
+        :root { --pad: 14px; }
+        * { box-sizing: border-box; }
+        body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; background: #0b0f14; color: #e6edf3; }
+        header { padding: var(--pad); text-align: center; }
+        main { max-width: 840px; margin: 0 auto; padding: var(--pad); display: grid; gap: var(--pad); }
+        .stage { position: relative; border-radius: 16px; overflow: hidden; background: #111827; aspect-ratio: 3/4; display: grid; place-items: center; }
+        video, img#photo { width: 100%; height: 100%; object-fit: cover; display: none; }
+        video.active, img#photo.active { display: block; }
+        .controls { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+        .controls.wide { grid-template-columns: repeat(3, 1fr); }
+        button, label.button { appearance: none; border: 1px solid #2d3748; background: #1f2937; color: #e6edf3; padding: 12px 14px; border-radius: 12px; cursor: pointer; font-weight: 600; text-align: center; transition: transform .02s ease-in-out, background .2s; }
+        button:hover, label.button:hover { background: #374151; }
+        button:active, label.button:active { transform: translateY(1px); }
+        .row { display: flex; gap: 10px; flex-wrap: wrap; }
+        .hidden { display: none !important; }
+        .hint { font-size: .9rem; color: #93a1b1; }
+        footer { text-align: center; color: #93a1b1; padding-bottom: var(--pad); }
+        .success { color: #10b981; }
+        .error { color: #ef4444; }
+    #gallery img { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>Camera Capture → Upload</h1>
+        <p class="hint">This version uploads the captured image to Google Drive via your server (<code>/upload-drive</code>), then loads a gallery from Drive (<code>/gallery</code>) and displays images below. Serve over HTTPS for camera access.</p>
+    </header>
+
+    <main>
+        <section class="stage" id="stage">
+            <video id="video" playsinline autoplay muted></video>
+            <img id="photo" alt="Captured photo" />
+            <canvas id="canvas" class="hidden"></canvas>
+        </section>
+
+        <div class="row">
+            <div class="controls wide" style="flex:1">
+                <button id="start">Start Camera</button>
+                <button id="switch">Switch Camera</button>
+                <button id="snap" disabled>Take Photo</button>
+            </div>
+            <div class="controls" style="flex:1">
+                <button id="upload" class="hidden">Upload</button>
+                <button id="retake" class="hidden">Retake</button>
+            </div>
+        </div>
+
+        <div class="row">
+            <input id="fileInput" type="file" accept="image/*" capture="environment" class="hidden" />
+            <label class="button" for="fileInput">📷 Open Camera (Fallback)</label>
+            <span class="hint">Use this if your browser blocks live camera preview.</span>
+        </div>
+
+        <div id="msg" class="hint"></div>
+
+        <section id="gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;padding-top:6px"></section>
+    </main>
+    <footer>
+        <small>Tip: If you see a black screen, ensure the page is served over HTTPS and grant camera permission.</small>
+    </footer>
+
+    <script>
+        const video = document.getElementById("video");
+        const photo = document.getElementById("photo");
+        const canvas = document.getElementById("canvas");
+        const startBtn = document.getElementById("start");
+        const switchBtn = document.getElementById("switch");
+        const snapBtn = document.getElementById("snap");
+        const uploadBtn = document.getElementById("upload");
+        const gallery = document.getElementById("gallery");
+        const retakeBtn = document.getElementById("retake");
+        const msg = document.getElementById("msg");
+        const TARGET_BYTES = 100 * 1024; // 100 KB
+        const fileInput = document.getElementById("fileInput");
+
+        let stream = null;
+        let usingEnvironment = true; // default to rear camera on phones
+        let lastBlob = null;         // holds the most recent picture as a Blob
+
+        function supported() {
+            return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+        }
+
+        async function startCamera() {
+            if (!supported()) {
+                msg.textContent = 'Live camera preview not supported. Use the fallback "Open Camera (Fallback)" button.';
+                return;
+            }
+            try {
+                if (stream) { stream.getTracks().forEach(t => t.stop()); }
+                const constraints = {
+                    video: { facingMode: usingEnvironment ? { exact: 'environment' } : 'user', width: { ideal: 1920 }, height: { ideal: 1080 } },
+                    audio: false
+                };
+                stream = await navigator.mediaDevices.getUserMedia(constraints).catch(async (err) => {
+                    if (err && err.name === 'OverconstrainedError') {
+                        return navigator.mediaDevices.getUserMedia({ video: { facingMode: usingEnvironment ? 'environment' : 'user' }, audio: false });
+                    }
+                    throw err;
+                });
+                video.srcObject = stream;
+                video.classList.add('active');
+                photo.classList.remove('active');
+                snapBtn.disabled = false;
+                uploadBtn.classList.add('hidden');
+                retakeBtn.classList.add('hidden');
+                lastBlob = null;
+                setMessage('');
+            } catch (e) {
+                console.error(e);
+                setMessage('Could not start camera: ' + (e.message || e), true);
+            }
+        }
+
+        async function capture() {
+            if (!video.videoWidth) { setMessage('Camera not ready yet. Try again.', true); return; }
+            const maxSide = 1600; 
+            const { w, h } = fitWithin(video.videoWidth, video.videoHeight, maxSide, maxSide);
+            canvas.width = w; canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, w, h);
+            lastBlob = await compressCanvas(canvas, TARGET_BYTES);
+            if (!lastBlob) { setMessage('Failed to compress image.', true); return; }
+            photo.src = URL.createObjectURL(lastBlob);
+            photo.classList.add('active');
+            video.classList.remove('active');
+            uploadBtn.classList.remove('hidden');
+            retakeBtn.classList.remove('hidden');
+            snapBtn.disabled = true;
+            setMessage(`Ready to upload (~${prettyBytes(lastBlob.size)})`);
+        }
+
+        async function upload() {
+            if (!lastBlob) { setMessage('No photo to upload yet.', true); return; }
+            try {
+                setMessage('Uploading…');
+                const form = new FormData();
+                const filename = 'photo-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
+                form.append('photo', lastBlob, filename);
+                const res = await fetch('/upload-drive', { method: 'POST', body: form });
+                if (!res.ok) throw new Error('Upload failed with status ' + res.status);
+                await res.json();
+                setMessage('Uploaded ✔', false, true);
+                await loadGallery();
+            } catch (e) {
+                console.error(e);
+                setMessage('Upload error: ' + (e.message || e), true);
+            }
+        }
+
+        function retake() {
+            photo.classList.remove('active');
+            video.classList.add('active');
+            uploadBtn.classList.add('hidden');
+            retakeBtn.classList.add('hidden');
+            snapBtn.disabled = false;
+            lastBlob = null;
+        }
+
+        function setMessage(text, isError = false, isSuccess = false) {
+            msg.textContent = text;
+            msg.classList.toggle('error', !!isError);
+            msg.classList.toggle('success', !!isSuccess);
+        }
+
+        // Fallback file input
+        fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            try {
+                const img = await readImageFile(file);
+                const maxSide = 1600;
+                const { w, h } = fitWithin(img.naturalWidth, img.naturalHeight, maxSide, maxSide);
+                canvas.width = w; canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, w, h);
+                lastBlob = await compressCanvas(canvas, TARGET_BYTES);
+                if (!lastBlob) throw new Error('Compression failed');
+                photo.src = URL.createObjectURL(lastBlob);
+                photo.classList.add('active');
+                video.classList.remove('active');
+                uploadBtn.classList.remove('hidden');
+                retakeBtn.classList.remove('hidden');
+                snapBtn.disabled = true;
+                setMessage(`Ready to upload (~${prettyBytes(lastBlob.size)})`);
+            } catch (err) {
+                console.error(err);
+                setMessage('Could not process selected image: ' + (err.message || err), true);
+            }
+        });
+
+        startBtn.addEventListener('click', startCamera);
+        switchBtn.addEventListener('click', () => { usingEnvironment = !usingEnvironment; startCamera(); });
+        snapBtn.addEventListener('click', capture);
+        uploadBtn.addEventListener('click', upload);
+        retakeBtn.addEventListener('click', retake);
+
+        async function loadGallery() {
+            try {
+                const res = await fetch('/gallery');
+                if (!res.ok) throw new Error('Gallery load failed');
+                const data = await res.json();
+                gallery.innerHTML = '';
+                (data.files || []).forEach(f => {
+                    const img = document.createElement('img');
+                    img.loading = 'lazy';
+                    img.alt = f.name || f.id;
+                    img.style.width = '100%';
+                    img.style.aspectRatio = '1/1';
+                    img.style.objectFit = 'cover';
+                    img.src = `/image/${f.id}`;
+                    gallery.appendChild(img);
+                });
+            } catch (e) {
+                console.error(e);
+                setMessage('Could not load gallery: ' + (e.message || e), true);
+            }
+        }
+
+        // Auto-start camera (if permission granted) and refresh gallery regularly
+        (async () => {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                if (devices.some(d => d.kind === 'videoinput')) { startCamera(); }
+                loadGallery();
+                // Refresh gallery every 15s like an Instagram grid feed
+                setInterval(loadGallery, 15000);
+            } catch {}
+        })();
+
+        // ---------- Helpers ----------
+        function prettyBytes(bytes){
+            const units=['B','KB','MB'];
+            let i=0, n=bytes;
+            while(n>=1024 && i<units.length-1){ n/=1024; i++; }
+            return `${n.toFixed(i?1:0)} ${units[i]}`;
+        }
+        function fitWithin(srcW, srcH, maxW, maxH){
+            const r=Math.min(maxW/srcW, maxH/srcH, 1);
+            return { w: Math.round(srcW*r), h: Math.round(srcH*r) };
+        }
+        function canvasToJpegBlob(canvas, quality){
+            return new Promise((resolve)=>{ canvas.toBlob((b)=>resolve(b), 'image/jpeg', quality); });
+        }
+        async function compressCanvas(srcCanvas, targetBytes){
+            let work = document.createElement('canvas');
+            work.width = srcCanvas.width; work.height = srcCanvas.height;
+            let ctx = work.getContext('2d');
+            ctx.drawImage(srcCanvas, 0, 0, work.width, work.height);
+            let quality = 0.8;
+            for (let step=0; step<12; step++){
+                let blob = await canvasToJpegBlob(work, quality);
+                if (blob && blob.size <= targetBytes) return blob;
+                if (quality > 0.4){
+                    quality = Math.max(0.4, quality - 0.1);
+                } else {
+                    const nw = Math.max(320, Math.round(work.width * 0.85));
+                    const nh = Math.max(320, Math.round(work.height * 0.85));
+                    if (nw === work.width && nh === work.height) break;
+                    const tmp = document.createElement('canvas');
+                    tmp.width = nw; tmp.height = nh;
+                    tmp.getContext('2d').drawImage(work, 0, 0, nw, nh);
+                    work = tmp; ctx = work.getContext('2d');
+                    quality = 0.75;
+                }
+            }
+            return await canvasToJpegBlob(work, 0.4);
+        }
+        function readImageFile(file){
+            return new Promise((resolve, reject)=>{
+                const fr = new FileReader();
+                fr.onload = ()=>{
+                    const img = new Image();
+                    img.onload = ()=> resolve(img);
+                    img.onerror = reject;
+                    img.src = fr.result;
+                };
+                fr.onerror = reject;
+                fr.readAsDataURL(file);
+            });
+        }
+    </script>
+</body>
+</html>

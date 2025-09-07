@@ -1,0 +1,26 @@
+{
+  "name": "wedding-snaps",
+  "version": "1.0.0",
+  "description": "",
+  "homepage": "https://github.com/demosthenesd/wedding-snaps#readme",
+  "bugs": {
+    "url": "https://github.com/demosthenesd/wedding-snaps/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/demosthenesd/wedding-snaps.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "googleapis": "^159.0.0",
+    "multer": "^2.0.2"
+  }
+}
