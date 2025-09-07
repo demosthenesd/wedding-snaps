@@ -1,0 +1,31 @@
+[build]
+  # For vanilla front-end:
+  publish = "public"
+  # For React+Vite instead:
+  # command = "npm run build"
+  # publish = "dist"
+
+[functions]
+  node_bundler = "esbuild"
+
+# Pretty routes → functions
+[[redirects]]
+  from = "/upload-drive"
+  to   = "/.netlify/functions/upload-drive"
+  status = 200
+[[redirects]]
+  from = "/gallery"
+  to   = "/.netlify/functions/gallery"
+  status = 200
+[[redirects]]
+  from = "/image/*"
+  to   = "/.netlify/functions/image/:splat"
+  status = 200
+[[redirects]]
+  from = "/auth"
+  to   = "/.netlify/functions/auth"
+  status = 200
+[[redirects]]
+  from = "/oauth2callback"
+  to   = "/.netlify/functions/oauth2callback"
+  status = 200
